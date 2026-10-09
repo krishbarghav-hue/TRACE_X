@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>TraceX</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', sans-serif;
+            width: 320px;
+            background: #070b14;
+            color: #f8fafc;
+            line-height: 1.4;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ── Header ─────────────────────────────────────────────── */
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 16px;
+            background: rgba(15, 23, 42, 0.95);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(16px);
+        }
+        .logo-wrap {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+        }
+        .logo-badge {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #6366f1, #0ea5e9);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 900;
+            font-size: 13px;
+            color: #ffffff;
+            box-shadow: 0 2px 10px rgba(99, 102, 241, 0.35);
+        }
+        .logo-text {
+            font-size: 15px;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+            color: #f8fafc;
+        }
+
+        /* ── Status Beacon ───────────────────────────────────────── */
+        .tracking-status-bar {
+            padding: 10px 16px;
+            background: rgba(15, 23, 42, 0.6);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .tracking-beacon-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .beacon-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #10b981;
+            box-shadow: 0 0 10px rgba(16, 185, 129, 0.7);
+            animation: pulseDot 2s infinite;
+        }
+        .beacon-dot.paused {
+            background: #f59e0b;
+            box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
+            animation: none;
+        }
+        @keyframes pulseDot {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.3); opacity: 0.7; }
+        }
+        .beacon-text {
+            font-size: 12px;
+            font-weight: 700;
+            color: #10b981;
+            letter-spacing: 0.2px;
+        }
+        .beacon-text.paused {
+            color: #f59e0b;
+        }
+
+        /* ── Sections ────────────────────────────────────────────── */
+        .section {
+            padding: 12px 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        .section-label {
+            font-size: 10px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+
+        /* ── Current Activity ────────────────────────────────────── */
+        .current-activity-box {
+            background: rgba(30, 41, 59, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            padding: 10px 12px;
+        }
+        .act-domain-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .act-domain {
+            font-size: 13px;
+            font-weight: 700;
+            color: #f8fafc;
+        }
+        .act-timer {
+            font-family: 'JetBrains Mono', 'Courier New', monospace;
+            font-size: 14px;
+            font-weight: 700;
+            color: #10b981;
+            letter-spacing: 0.5px;
+        }
+        .act-title {
+            font-size: 11px;
+            color: #94a3b8;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            line-height: 1.3;
+        }
+
+        /* ── Today Stats Grid ────────────────────────────────────── */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-top: 6px;
+        }
+        .stat-card {
+            background: rgba(30, 41, 59, 0.45);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 8px;
+            padding: 8px 6px;
+            text-align: center;
+        }
+        .stat-val {
+            font-size: 16px;
+            font-weight: 800;
+            color: #f8fafc;
+            letter-spacing: -0.3px;
+        }
+        .stat-lbl {
+            font-size: 9px;
+            color: #94a3b8;
+            text-transform: uppercase;
+            font-weight: 600;
+            margin-top: 2px;
+            letter-spacing: 0.3px;
+        }
+
+        /* ── Backend Status ──────────────────────────────────────── */
+        .backend-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .backend-status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: #10b981;
+        }
+        .backend-status-badge.offline {
+            color: #ef4444;
+        }
+        .backend-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #10b981;
+        }
+        .backend-dot.offline {
+            background: #ef4444;
+        }
+        .pending-count {
+            color: #94a3b8;
+            font-size: 11px;
+        }
+        .pending-count.has-pending {
+            color: #f59e0b;
+            font-weight: 700;
+        }
+        .offline-buffer-msg {
+            margin-top: 6px;
+            font-size: 10px;
+            color: #fbbf24;
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px solid rgba(245, 158, 11, 0.2);
+            border-radius: 6px;
+            padding: 5px 8px;
+            line-height: 1.35;
+        }
+
+        /* ── Actions ─────────────────────────────────────────────── */
+        .actions-section {
+            padding: 12px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .btn-tracking {
+            width: 100%;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(30, 41, 59, 0.6);
+            color: #f8fafc;
+            transition: all 0.2s ease;
+        }
+        .btn-tracking:hover {
+            background: rgba(51, 65, 85, 0.8);
+        }
+        .btn-tracking.is-paused {
+            background: rgba(16, 185, 129, 0.15);
+            border-color: rgba(16, 185, 129, 0.3);
+            color: #34d399;
+        }
+        .btn-dashboard {
+            width: 100%;
+            padding: 9px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            border: none;
+            background: linear-gradient(135deg, #6366f1, #4f46e5);
+            color: #ffffff;
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
+            transition: all 0.2s ease;
+        }
+        .btn-dashboard:hover {
+            box-shadow: 0 6px 16px rgba(99, 102, 241, 0.5);
+            transform: translateY(-1px);
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <div class="logo-wrap">
+            <div class="logo-badge">TX</div>
+            <span class="logo-text">TRACE-X</span>
+        </div>
+    </div>
+
+    <!-- Tracking Status -->
+    <div class="tracking-status-bar">
+        <div class="tracking-beacon-group">
+            <div id="trackingDot" class="beacon-dot"></div>
+            <span id="trackingLabel" class="beacon-text">● Tracking Active</span>
+        </div>
+    </div>
+
+    <!-- Current Activity -->
+    <div class="section">
+        <div class="section-label">Current Activity</div>
+        <div class="current-activity-box">
+            <div class="act-domain-row">
+                <span id="currentPageDomain" class="act-domain">No Active Tab</span>
+                <span id="currentDuration" class="act-timer">00:00</span>
+            </div>
+            <div id="currentPageTitle" class="act-title">Waiting for browser navigation…</div>
+        </div>
+    </div>
+
+    <!-- Today -->
+    <div class="section">
+        <div class="section-label">Today</div>
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div id="activeTime" class="stat-val" style="color: #38bdf8;">0m</div>
+                <div class="stat-lbl">Active Time</div>
+            </div>
+            <div class="stat-card">
+                <div id="visitCount" class="stat-val" style="color: #a855f7;">0</div>
+                <div class="stat-lbl">Activities</div>
+            </div>
+            <div class="stat-card">
+                <div id="domainCount" class="stat-val" style="color: #34d399;">0</div>
+                <div class="stat-lbl">Sites</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Backend -->
+    <div class="section">
+        <div class="section-label">Backend</div>
+        <div class="backend-row">
+            <div id="backendStatusGroup" class="backend-status-badge">
+                <span id="backendDot" class="backend-dot"></span>
+                <span id="backendStatusText">● Online</span>
+            </div>
+            <div id="pendingGroup" class="pending-count">
+                Pending <span id="queueCount">0</span>
+            </div>
+        </div>
+        <div id="offlineBufferMsg" class="offline-buffer-msg" style="display: none;">
+            Activity is safely buffered and will sync when the backend returns.
+        </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="actions-section">
+        <button id="toggleTrackingBtn" class="btn-tracking">Pause Tracking</button>
+        <button id="dashboardBtn" class="btn-dashboard">Open TraceX Dashboard</button>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "TraceX",
+  "version": "1.2",
+  "description": "TraceX — Privacy-first digital activity recorder. Tracks your browser activity to build your personal activity timeline.",
+  "permissions": [
+    "tabs",
+    "idle",
+    "storage",
+    "alarms",
+    "history"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*",
+    "http://localhost:5173/*",
+    "http://127.0.0.1:5173/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://localhost:5173/*", "http://127.0.0.1:5173/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "externally_connectable": {
+    "matches": ["http://localhost:5173/*", "http://127.0.0.1:5173/*"]
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "TraceX Activity Tracker"
+  }
+}
