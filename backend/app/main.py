@@ -1,4 +1,4 @@
-
+```python
 import io
 import os
 import zipfile
@@ -39,14 +39,15 @@ frontend_url = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
 
 origins = [
     frontend_url,
+    "https://trace-x-bice.vercel.app",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
 
-# Remove empty origins
-origins = [origin for origin in origins if origin]
+# Remove empty and duplicate origins
+origins = list(dict.fromkeys(origin for origin in origins if origin))
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,7 +57,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # Create missing tables from registered SQLAlchemy models.
 # This does NOT add missing columns to existing tables.
