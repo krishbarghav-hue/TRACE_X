@@ -1,7 +1,10 @@
 // TraceX API Client — DBMS Phase
 // Centralized API calls for all TraceX features.
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\\/$/, '');
+const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL ||
+  'http://127.0.0.1:8000'
+).replace(/\/$/, '');
 
 export const TOKEN_KEY             = 'tracex_token';
 export const USER_KEY              = 'tracex_user';
