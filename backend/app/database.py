@@ -1,55 +1,67 @@
+
 import os
 import urllib.parse
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-# Load .env file from the backend folder
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
-
-# Read database settings from .env
-DB_HOST     = os.getenv("DB_HOST", "localhost")
-DB_PORT     = os.getenv("DB_PORT", "3306")
-DB_USER     = os.getenv("DB_USER", "root")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "")
-DB_NAME     = os.getenv("DB_NAME", "trace_x")
-
-# Encode password so special characters like #, <, > don't break the URL
-encoded_password = urllib.parse.quote_plus(DB_PASSWORD)
-
-# Build the connection string
-# Format: mysql+pymysql://user:password@host:port/database
-DATABASE_URL = (
-    f"mysql+pymysql://{DB_USER}:{encoded_password}"
-    f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+# Load backend/.env locally.
+# On Render, environment variables are supplied by Render itself.
+load_dotenv(
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
 )
 
-# Create the SQLAlchemy engine
-# pool_pre_ping=True: tests the connection before using it (prevents stale connections)
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, echo=False)
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "3306")
+DB_USER = os.getenv("DB_USER", "root")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+DB_NAME = os.getenv("DB_NAME", "trace_x")
 
-# SessionLocal is a factory that creates new database sessions
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+encoded_user = urllib.parse.quote_plus(DB_USER)
+encoded_password = urllib.parse.quote_plus(DB_PASSWORD)
+encoded_database = urllib.parse.quote_plus(DB_NAME)
 
-# Base is the parent class for all our database models (User, Course, etc.)
+DATABASE_URL = (
+    f"mysql+pymysql://{encoded_user}:{encoded_password}"
+    f"@{DB_HOST}:{DB_PORT}/{encoded_database}"
+)
+
+# Aiven requires encrypted connections. Enable TLS when configured
+# for the hosted database; keep local development convenient.
+
+connect_args = {}
+
+if os.getenv("DB_SSL", "false").lower() in ("true", "1", "yes"):
+    ca_path = os.getenv(
+        "DB_SSL_CA_PATH",
+        os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "ca.pem",
+        ),
+    )
+
+    connect_args["ssl"] = {
+        "ca": ca_path,
+        "check_hostname": True,
+    }
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    echo=False,
+    connect_args=connect_args,
+)
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+)
+
 Base = declarative_base()
 
 
 def get_db():
-    """
-    FastAPI dependency: provides a database session to each route.
-
-    Usage in a route:
-        from app.database import get_db
-        from sqlalchemy.orm import Session
-        from fastapi import Depends
-
-        @router.get("/something")
-        def my_route(db: Session = Depends(get_db)):
-            ...
-
-    The 'yield' means: open session → run route → close session (always).
-    """
     db = SessionLocal()
     try:
         yield db
