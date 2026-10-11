@@ -12,41 +12,46 @@ from app.models.document import Document
 from app.models.note import Note
 from app.models.study_session import StudySession
 from app.models.progress import Progress, ProgressStatus
-
-TEST_USER_ID = 1
+from app.models.user import User
+from app.utils.auth import get_current_user
 
 router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
 
 
 # ── 1. OVERVIEW ANALYTICS ─────────────────────────────────────────────────────
 @router.get("/overview")
-def get_analytics_overview(db: Session = Depends(get_db)):
+def get_analytics_overview(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
-    Returns overall learning statistics for the current user.
+    Returns overall learning statistics for the authenticated user.
     """
+    user_id = current_user.user_id
+
     # 1. Total courses
-    total_courses = db.query(func.count(Course.course_id)).filter(Course.user_id == TEST_USER_ID).scalar() or 0
+    total_courses = db.query(func.count(Course.course_id)).filter(Course.user_id == user_id).scalar() or 0
 
     # 2. Total topics
     total_topics = (
         db.query(func.count(Topic.topic_id))
         .join(Course, Topic.course_id == Course.course_id)
-        .filter(Course.user_id == TEST_USER_ID)
+        .filter(Course.user_id == user_id)
         .scalar() or 0
     )
 
     # 3. Total resources
-    total_resources = db.query(func.count(Resource.resource_id)).filter(Resource.user_id == TEST_USER_ID).scalar() or 0
+    total_resources = db.query(func.count(Resource.resource_id)).filter(Resource.user_id == user_id).scalar() or 0
 
     # 4. Total documents
     total_documents = (
         db.query(func.count(Document.document_id))
-        .filter(Document.user_id == TEST_USER_ID, Document.is_deleted == False)
+        .filter(Document.user_id == user_id, Document.is_deleted == False)
         .scalar() or 0
     )
 
     # 5. Total notes
-    total_notes = db.query(func.count(Note.note_id)).filter(Note.user_id == TEST_USER_ID).scalar() or 0
+    total_notes = db.query(func.count(Note.note_id)).filter(Note.user_id == user_id).scalar() or 0
 
     # 6. Total study sessions & study time
     sess_stats = (
@@ -54,7 +59,7 @@ def get_analytics_overview(db: Session = Depends(get_db)):
             func.count(StudySession.session_id).label("total_sessions"),
             func.coalesce(func.sum(StudySession.duration_minutes), 0).label("total_study_minutes")
         )
-        .filter(StudySession.user_id == TEST_USER_ID)
+        .filter(StudySession.user_id == user_id)
         .first()
     )
     total_sessions = sess_stats.total_sessions if sess_stats else 0
@@ -64,7 +69,7 @@ def get_analytics_overview(db: Session = Depends(get_db)):
     today = datetime.now().date()
     today_minutes_query = (
         db.query(func.coalesce(func.sum(StudySession.duration_minutes), 0))
-        .filter(StudySession.user_id == TEST_USER_ID, func.date(StudySession.start_time) == today)
+        .filter(StudySession.user_id == user_id, func.date(StudySession.start_time) == today)
         .scalar() or 0
     )
     today_study_minutes = int(today_minutes_query)
@@ -75,7 +80,7 @@ def get_analytics_overview(db: Session = Depends(get_db)):
             func.count(case((Progress.status == ProgressStatus.completed, 1))).label("completed_count"),
             func.coalesce(func.avg(Progress.percent_complete), 0.0).label("avg_progress")
         )
-        .filter(Progress.user_id == TEST_USER_ID)
+        .filter(Progress.user_id == user_id)
         .first()
     )
     completed_topics = prog_stats.completed_count if prog_stats else 0
@@ -95,7 +100,7 @@ def get_analytics_overview(db: Session = Depends(get_db)):
         .join(StudySession, Resource.resource_id == StudySession.resource_id)
         .join(Course, Resource.course_id == Course.course_id)
         .outerjoin(Topic, Resource.topic_id == Topic.topic_id)
-        .filter(StudySession.user_id == TEST_USER_ID)
+        .filter(StudySession.user_id == user_id)
         .group_by(Resource.resource_id, Resource.title, Resource.resource_type, Course.course_name, Topic.topic_name, Resource.url)
         .order_by(text("last_studied DESC"))
         .limit(5)
@@ -131,11 +136,16 @@ def get_analytics_overview(db: Session = Depends(get_db)):
 
 # ── 2. COURSE ANALYTICS ───────────────────────────────────────────────────────
 @router.get("/course/{course_id}")
-def get_course_analytics(course_id: int, db: Session = Depends(get_db)):
+def get_course_analytics(
+    course_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Returns detailed analytics for a specific course.
     """
-    course = db.query(Course).filter(Course.course_id == course_id, Course.user_id == TEST_USER_ID).first()
+    user_id = current_user.user_id
+    course = db.query(Course).filter(Course.course_id == course_id, Course.user_id == user_id).first()
     if not course:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found.")
 
@@ -145,7 +155,7 @@ def get_course_analytics(course_id: int, db: Session = Depends(get_db)):
             func.count(StudySession.session_id).label("total_sessions"),
             func.coalesce(func.sum(StudySession.duration_minutes), 0).label("total_minutes")
         )
-        .filter(StudySession.course_id == course_id, StudySession.user_id == TEST_USER_ID)
+        .filter(StudySession.course_id == course_id, StudySession.user_id == user_id)
         .first()
     )
     total_sessions = sess_stats.total_sessions if sess_stats else 0
@@ -155,13 +165,13 @@ def get_course_analytics(course_id: int, db: Session = Depends(get_db)):
     topic_count = db.query(func.count(Topic.topic_id)).filter(Topic.course_id == course_id).scalar() or 0
 
     # Resource count
-    resource_count = db.query(func.count(Resource.resource_id)).filter(Resource.course_id == course_id, Resource.user_id == TEST_USER_ID).scalar() or 0
+    resource_count = db.query(func.count(Resource.resource_id)).filter(Resource.course_id == course_id, Resource.user_id == user_id).scalar() or 0
 
     # Average progress across topics in course
     avg_prog = (
         db.query(func.coalesce(func.avg(Progress.percent_complete), 0.0))
         .join(Topic, Progress.topic_id == Topic.topic_id)
-        .filter(Topic.course_id == course_id, Progress.user_id == TEST_USER_ID)
+        .filter(Topic.course_id == course_id, Progress.user_id == user_id)
         .scalar() or 0.0
     )
 
@@ -174,7 +184,7 @@ def get_course_analytics(course_id: int, db: Session = Depends(get_db)):
             func.count(StudySession.session_id).label("session_count")
         )
         .join(Topic, StudySession.topic_id == Topic.topic_id)
-        .filter(StudySession.course_id == course_id, StudySession.user_id == TEST_USER_ID)
+        .filter(StudySession.course_id == course_id, StudySession.user_id == user_id)
         .group_by(Topic.topic_id, Topic.topic_name)
         .order_by(text("study_minutes DESC"))
         .limit(5)
@@ -205,10 +215,15 @@ def get_course_analytics(course_id: int, db: Session = Depends(get_db)):
 
 # ── 3. WEEKLY ANALYTICS ───────────────────────────────────────────────────────
 @router.get("/weekly")
-def get_weekly_analytics(days: int = 7, db: Session = Depends(get_db)):
+def get_weekly_analytics(
+    days: int = 7,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Returns study minutes aggregated by date for graphing.
     """
+    user_id = current_user.user_id
     start_date = datetime.now().date() - timedelta(days=days - 1)
 
     daily_rows = (
@@ -217,7 +232,7 @@ def get_weekly_analytics(days: int = 7, db: Session = Depends(get_db)):
             func.coalesce(func.sum(StudySession.duration_minutes), 0).label("total_minutes")
         )
         .filter(
-            StudySession.user_id == TEST_USER_ID,
+            StudySession.user_id == user_id,
             func.date(StudySession.start_time) >= start_date
         )
         .group_by(func.date(StudySession.start_time))
@@ -241,10 +256,15 @@ def get_weekly_analytics(days: int = 7, db: Session = Depends(get_db)):
 
 # ── 4. STUDY TIME ANALYTICS ───────────────────────────────────────────────────
 @router.get("/study-time")
-def get_study_time_breakdown(db: Session = Depends(get_db)):
+def get_study_time_breakdown(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Returns study time grouped by course, topic, and resource.
     """
+    user_id = current_user.user_id
+
     # By Course
     course_rows = (
         db.query(
@@ -254,7 +274,7 @@ def get_study_time_breakdown(db: Session = Depends(get_db)):
             func.count(StudySession.session_id).label("session_count")
         )
         .join(Course, StudySession.course_id == Course.course_id)
-        .filter(StudySession.user_id == TEST_USER_ID)
+        .filter(StudySession.user_id == user_id)
         .group_by(Course.course_id, Course.course_name)
         .order_by(text("study_minutes DESC"))
         .all()
@@ -281,7 +301,7 @@ def get_study_time_breakdown(db: Session = Depends(get_db)):
         )
         .join(Topic, StudySession.topic_id == Topic.topic_id)
         .join(Course, Topic.course_id == Course.course_id)
-        .filter(StudySession.user_id == TEST_USER_ID)
+        .filter(StudySession.user_id == user_id)
         .group_by(Topic.topic_id, Topic.topic_name, Course.course_id, Course.course_name)
         .order_by(text("study_minutes DESC"))
         .all()
@@ -309,7 +329,7 @@ def get_study_time_breakdown(db: Session = Depends(get_db)):
         )
         .join(Resource, StudySession.resource_id == Resource.resource_id)
         .join(Course, Resource.course_id == Course.course_id)
-        .filter(StudySession.user_id == TEST_USER_ID)
+        .filter(StudySession.user_id == user_id)
         .group_by(Resource.resource_id, Resource.title, Course.course_name)
         .order_by(text("study_minutes DESC"))
         .all()
@@ -334,10 +354,15 @@ def get_study_time_breakdown(db: Session = Depends(get_db)):
 
 # ── 5. PROGRESS ANALYTICS ─────────────────────────────────────────────────────
 @router.get("/progress")
-def get_progress_analytics(db: Session = Depends(get_db)):
+def get_progress_analytics(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Returns progress analytics across courses and topics.
     """
+    user_id = current_user.user_id
+
     # Course progress
     course_prog_rows = (
         db.query(
@@ -348,7 +373,7 @@ def get_progress_analytics(db: Session = Depends(get_db)):
         )
         .join(Topic, Topic.course_id == Course.course_id)
         .outerjoin(Progress, Progress.topic_id == Topic.topic_id)
-        .filter(Course.user_id == TEST_USER_ID)
+        .filter(Course.user_id == user_id)
         .group_by(Course.course_id, Course.course_name)
         .all()
     )
@@ -373,7 +398,7 @@ def get_progress_analytics(db: Session = Depends(get_db)):
         )
         .join(Course, Topic.course_id == Course.course_id)
         .outerjoin(Progress, Progress.topic_id == Topic.topic_id)
-        .filter(Course.user_id == TEST_USER_ID)
+        .filter(Course.user_id == user_id)
         .all()
     )
 
@@ -411,14 +436,19 @@ def get_progress_analytics(db: Session = Depends(get_db)):
 
 # ── 6. UNSTUDIED RESOURCES ────────────────────────────────────────────────────
 @router.get("/unstudied-resources")
-def get_unstudied_resources(db: Session = Depends(get_db)):
+def get_unstudied_resources(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Finds resources that exist but have never been associated with a study session.
     """
+    user_id = current_user.user_id
+
     # Subquery of resource IDs that have at least one study session
     studied_resource_ids = (
         db.query(StudySession.resource_id)
-        .filter(StudySession.user_id == TEST_USER_ID, StudySession.resource_id != None)
+        .filter(StudySession.user_id == user_id, StudySession.resource_id != None)
         .distinct()
     )
 
@@ -435,7 +465,7 @@ def get_unstudied_resources(db: Session = Depends(get_db)):
         .join(Course, Resource.course_id == Course.course_id)
         .outerjoin(Topic, Resource.topic_id == Topic.topic_id)
         .filter(
-            Resource.user_id == TEST_USER_ID,
+            Resource.user_id == user_id,
             Resource.resource_id.not_in(studied_resource_ids)
         )
         .all()
@@ -452,3 +482,4 @@ def get_unstudied_resources(db: Session = Depends(get_db)):
         }
         for r in unstudied
     ]
+

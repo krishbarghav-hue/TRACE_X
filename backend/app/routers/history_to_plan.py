@@ -11,15 +11,18 @@ from app.models.progress import Progress
 from app.models.activity_log import ActivityLog
 from app.models.study_session import StudySession
 from app.models.goal import Goal
-
-TEST_USER_ID = 1
+from app.models.user import User
+from app.utils.auth import get_current_user
 
 router = APIRouter(prefix="/api/history-to-plan", tags=["History-to-Plan"])
 
 
 @router.get("")
 @router.get("/", include_in_schema=False)
-def get_history_to_plan_recommendations(db: Session = Depends(get_db)):
+def get_history_to_plan_recommendations(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Rule-based recommendation engine that prioritizes study topics based on:
     - Browser activity telemetry (browse_count, browse_minutes)
@@ -30,11 +33,13 @@ def get_history_to_plan_recommendations(db: Session = Depends(get_db)):
     Formula:
     score = (2 * browse_count) + (0.5 * browse_minutes) + (0.3 * (100 - percent_complete)) + goal_urgency_bonus
     """
-    # 1. Fetch all topics for the current user across courses
+    user_id = current_user.user_id
+
+    # 1. Fetch all topics for the authenticated user across courses
     topics = (
         db.query(Topic, Course)
         .join(Course, Topic.course_id == Course.course_id)
-        .filter(Course.user_id == TEST_USER_ID)
+        .filter(Course.user_id == user_id)
         .all()
     )
 
@@ -53,7 +58,7 @@ def get_history_to_plan_recommendations(db: Session = Depends(get_db)):
                 func.coalesce(func.sum(ActivityLog.duration_seconds), 0).label("browse_seconds")
             )
             .filter(
-                ActivityLog.user_id == TEST_USER_ID,
+                ActivityLog.user_id == user_id,
                 ActivityLog.topic_id == topic.topic_id
             )
             .first()
@@ -66,7 +71,7 @@ def get_history_to_plan_recommendations(db: Session = Depends(get_db)):
         prog = (
             db.query(Progress)
             .filter(
-                Progress.user_id == TEST_USER_ID,
+                Progress.user_id == user_id,
                 Progress.topic_id == topic.topic_id
             )
             .first()
@@ -77,7 +82,7 @@ def get_history_to_plan_recommendations(db: Session = Depends(get_db)):
         active_goal = (
             db.query(Goal)
             .filter(
-                Goal.user_id == TEST_USER_ID,
+                Goal.user_id == user_id,
                 Goal.topic_id == topic.topic_id,
                 Goal.is_achieved == False
             )
@@ -119,7 +124,7 @@ def get_history_to_plan_recommendations(db: Session = Depends(get_db)):
         last_session = (
             db.query(StudySession)
             .filter(
-                StudySession.user_id == TEST_USER_ID,
+                StudySession.user_id == user_id,
                 StudySession.topic_id == topic.topic_id
             )
             .order_by(StudySession.end_time.desc())
@@ -154,3 +159,4 @@ def get_history_to_plan_recommendations(db: Session = Depends(get_db)):
     recommendations.sort(key=lambda x: x["score"], reverse=True)
 
     return {"recommendations": recommendations}
+

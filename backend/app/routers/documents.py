@@ -11,9 +11,9 @@ from app.models.course import Course
 from app.models.topic import Topic
 from app.models.resource import Resource
 from app.models.document import Document
+from app.models.user import User
 from app.schemas.document import DocumentResponse
-
-TEST_USER_ID = 1
+from app.utils.auth import get_current_user
 
 # Base directory for uploads: backend/uploads/
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -35,13 +35,14 @@ async def upload_document(
     resource_id: Optional[int] = Form(None),
     description: Optional[str] = Form(None),
     file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Upload a study document (PDF, PPT, DOC, TXT) and store its metadata.
     """
-    # 1. Validate course exists
-    course = db.query(Course).filter(Course.course_id == course_id, Course.user_id == TEST_USER_ID).first()
+    # 1. Validate course exists and belongs to current user
+    course = db.query(Course).filter(Course.course_id == course_id, Course.user_id == current_user.user_id).first()
     if not course:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -59,7 +60,7 @@ async def upload_document(
 
     # 3. Validate resource if supplied
     if resource_id is not None:
-        res = db.query(Resource).filter(Resource.resource_id == resource_id, Resource.course_id == course_id).first()
+        res = db.query(Resource).filter(Resource.resource_id == resource_id, Resource.course_id == course_id, Resource.user_id == current_user.user_id).first()
         if not res:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -100,7 +101,7 @@ async def upload_document(
 
     # 8. Save metadata to MySQL
     new_doc = Document(
-        user_id=TEST_USER_ID,
+        user_id=current_user.user_id,
         course_id=course_id,
         topic_id=topic_id,
         resource_id=resource_id,
@@ -123,17 +124,21 @@ async def upload_document(
 
 # ── LIST DOCUMENTS BY COURSE ──────────────────────────────────────────────────
 @router.get("/course/{course_id}", response_model=list)
-def get_documents_by_course(course_id: int, db: Session = Depends(get_db)):
+def get_documents_by_course(
+    course_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Retrieve all documents for a specific course (not deleted).
     """
-    course = db.query(Course).filter(Course.course_id == course_id, Course.user_id == TEST_USER_ID).first()
+    course = db.query(Course).filter(Course.course_id == course_id, Course.user_id == current_user.user_id).first()
     if not course:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found.")
 
     docs = (
         db.query(Document)
-        .filter(Document.course_id == course_id, Document.user_id == TEST_USER_ID, Document.is_deleted == False)
+        .filter(Document.course_id == course_id, Document.user_id == current_user.user_id, Document.is_deleted == False)
         .order_by(Document.uploaded_at.desc())
         .all()
     )
@@ -155,13 +160,26 @@ def get_documents_by_course(course_id: int, db: Session = Depends(get_db)):
 
 # ── LIST DOCUMENTS BY TOPIC ───────────────────────────────────────────────────
 @router.get("/topic/{topic_id}", response_model=list)
-def get_documents_by_topic(topic_id: int, db: Session = Depends(get_db)):
+def get_documents_by_topic(
+    topic_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Retrieve all documents for a specific topic (not deleted).
     """
+    topic = (
+        db.query(Topic)
+        .join(Course, Topic.course_id == Course.course_id)
+        .filter(Topic.topic_id == topic_id, Course.user_id == current_user.user_id)
+        .first()
+    )
+    if not topic:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topic not found.")
+
     docs = (
         db.query(Document)
-        .filter(Document.topic_id == topic_id, Document.user_id == TEST_USER_ID, Document.is_deleted == False)
+        .filter(Document.topic_id == topic_id, Document.user_id == current_user.user_id, Document.is_deleted == False)
         .order_by(Document.uploaded_at.desc())
         .all()
     )
@@ -183,13 +201,17 @@ def get_documents_by_topic(topic_id: int, db: Session = Depends(get_db)):
 
 # ── GET DOCUMENT METADATA ─────────────────────────────────────────────────────
 @router.get("/{document_id}", response_model=DocumentResponse)
-def get_document(document_id: int, db: Session = Depends(get_db)):
+def get_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Retrieve document metadata by document ID.
     """
     doc = (
         db.query(Document)
-        .filter(Document.document_id == document_id, Document.user_id == TEST_USER_ID, Document.is_deleted == False)
+        .filter(Document.document_id == document_id, Document.user_id == current_user.user_id, Document.is_deleted == False)
         .first()
     )
     if not doc:
@@ -202,13 +224,17 @@ def get_document(document_id: int, db: Session = Depends(get_db)):
 
 # ── DELETE DOCUMENT ───────────────────────────────────────────────────────────
 @router.delete("/{document_id}")
-def delete_document(document_id: int, db: Session = Depends(get_db)):
+def delete_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Delete a document (marks is_deleted = True and removes stored file).
     """
     doc = (
         db.query(Document)
-        .filter(Document.document_id == document_id, Document.user_id == TEST_USER_ID, Document.is_deleted == False)
+        .filter(Document.document_id == document_id, Document.user_id == current_user.user_id, Document.is_deleted == False)
         .first()
     )
     if not doc:
@@ -229,3 +255,4 @@ def delete_document(document_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": "Document deleted successfully", "document_id": document_id}
+

@@ -26,16 +26,21 @@ from app.database import get_db
 from app.models.activity_log import ActivityLog
 from app.models.browser_history import BrowserHistory
 from app.models.website_usage import WebsiteUsage
-from app.models.resource import Resource, ResourceType
+from app.models.user import User
 from app.schemas.activity_log import ActivityLogCreate, ActivityLogResponse
-from app.utils.auth import get_optional_user_id
+from app.utils.auth import get_current_user
 
-# ── Tracking state & extension status (in-memory, per server process) ─────────
-_tracking_state: Dict[str, Any] = {
-    "is_paused": False,
-    "last_seen": None,
-    "version": "1.2",
-}
+# ── Tracking state & extension status (in-memory, per authenticated user) ─────
+_user_tracking_states: Dict[int, Dict[str, Any]] = {}
+
+def _get_user_tracking_state(user_id: int) -> Dict[str, Any]:
+    if user_id not in _user_tracking_states:
+        _user_tracking_states[user_id] = {
+            "is_paused": False,
+            "last_seen": None,
+            "version": "1.2",
+        }
+    return _user_tracking_states[user_id]
 
 # ── In-memory current activity per user (user_id → current activity data) ─────
 # Updated via heartbeat endpoint. Allows /current to return real-time data
@@ -44,24 +49,14 @@ _current_activity: Dict[int, Dict[str, Any]] = {}
 
 
 def get_effective_user_id(
-    auth_user_id: int = Depends(get_optional_user_id),
-    user_id: Optional[int] = Query(None),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user)
 ) -> int:
     """
-    Return explicit query user_id if supplied, otherwise auth_user_id.
-    In local single-user desktop environment: if the authenticated user has no
-    activity logs recorded yet, fall back gracefully to default user (1) where the
-    Chrome extension records local browser telemetry. This ensures the React dashboard
-    and extension popup always read the exact same source of truth.
+    Derive the user ID strictly from the verified JWT.
+    Never accepts untrusted query overrides or substitutes user 1.
     """
-    if user_id is not None:
-        return user_id
-    if auth_user_id != 1:
-        count = db.query(func.count(ActivityLog.activity_id)).filter(ActivityLog.user_id == auth_user_id).scalar() or 0
-        if count == 0:
-            return 1
-    return auth_user_id
+    return current_user.user_id
+
 
 
 def _update_website_usage(db: Session, user_id: int, domain: str, duration: int, visit_time: datetime):
@@ -169,15 +164,16 @@ router = APIRouter(prefix="/api/activity-logs", tags=["Activity Logs"])
 @router.get("/tracking-status")
 def get_tracking_status(user_id: int = Depends(get_effective_user_id)):
     """Check if tracking is currently paused or active, and extension health."""
+    user_state = _get_user_tracking_state(user_id)
     is_connected = False
-    if _tracking_state["last_seen"]:
-        diff = (datetime.now() - _tracking_state["last_seen"]).total_seconds()
+    if user_state["last_seen"]:
+        diff = (datetime.now() - user_state["last_seen"]).total_seconds()
         is_connected = diff < 300  # Seen in last 5 minutes
     return {
-        "is_paused": _tracking_state["is_paused"],
+        "is_paused": user_state["is_paused"],
         "is_connected": is_connected,
-        "last_seen": _tracking_state["last_seen"].isoformat() if _tracking_state["last_seen"] else None,
-        "version": _tracking_state["version"],
+        "last_seen": user_state["last_seen"].isoformat() if user_state["last_seen"] else None,
+        "version": user_state["version"],
         "user_id": user_id,
     }
 
@@ -185,12 +181,13 @@ def get_tracking_status(user_id: int = Depends(get_effective_user_id)):
 @router.post("/tracking-status")
 def set_tracking_status(payload: Dict[str, Any], user_id: int = Depends(get_effective_user_id)):
     """Allows web dashboard or extension to toggle pause tracking."""
+    user_state = _get_user_tracking_state(user_id)
     if "is_paused" in payload:
-        _tracking_state["is_paused"] = bool(payload["is_paused"])
+        user_state["is_paused"] = bool(payload["is_paused"])
     return {
-        "is_paused": _tracking_state["is_paused"],
+        "is_paused": user_state["is_paused"],
         "user_id": user_id,
-        "message": "Tracking paused" if _tracking_state["is_paused"] else "Tracking active"
+        "message": "Tracking paused" if user_state["is_paused"] else "Tracking active"
     }
 
 
@@ -207,14 +204,15 @@ def extension_heartbeat(
       2. Previous live activity is finalized.
       3. /current and direct MySQL queries reflect real-time live activity.
     """
-    _tracking_state["last_seen"] = datetime.now()
+    user_state = _get_user_tracking_state(user_id)
+    user_state["last_seen"] = datetime.now()
     if "version" in payload:
-        _tracking_state["version"] = str(payload["version"])
+        user_state["version"] = str(payload["version"])
     if "is_paused" in payload:
-        _tracking_state["is_paused"] = bool(payload["is_paused"])
+        user_state["is_paused"] = bool(payload["is_paused"])
 
     current_domain = payload.get("current_domain")
-    is_paused = payload.get("is_paused", False) or _tracking_state["is_paused"]
+    is_paused = payload.get("is_paused", False) or user_state["is_paused"]
 
     # Store live activity data for /current endpoint
     if current_domain and not is_paused:
@@ -238,8 +236,6 @@ def extension_heartbeat(
             "event_id":     event_id,
             "heartbeat_at": datetime.now().isoformat(),
         }
-        if user_id != 1:
-            _current_activity[1] = _current_activity[user_id]
 
         # ── Database synchronization: Ensure MySQL reflects live state ───────
         try:
@@ -254,9 +250,10 @@ def extension_heartbeat(
                 "ended_at": datetime.now()
             }, synchronize_session=False)
 
-            # 2. Check if a row for this event_id already exists in MySQL
+            # 2. Check if a row for this event_id already exists in MySQL for this user
             existing_live = db.query(ActivityLog).filter(
-                ActivityLog.event_id == event_id
+                ActivityLog.event_id == event_id,
+                ActivityLog.user_id == user_id
             ).first()
 
             now = datetime.now()
@@ -304,7 +301,6 @@ def extension_heartbeat(
 
     elif is_paused or current_domain is None:
         _current_activity.pop(user_id, None)
-        _current_activity.pop(1, None)
         try:
             db.query(ActivityLog).filter(
                 ActivityLog.user_id == user_id,
@@ -320,7 +316,7 @@ def extension_heartbeat(
 
     return {
         "status": "connected",
-        "is_paused": _tracking_state["is_paused"],
+        "is_paused": user_state["is_paused"],
         "user_id": user_id,
         "server_time": datetime.now().isoformat()
     }
@@ -329,11 +325,12 @@ def extension_heartbeat(
 @router.post("/auto-connect")
 def auto_connect_tracex(user_id: int = Depends(get_effective_user_id)):
     """Automatically connects TraceX platform without requiring manual user account linking."""
-    _tracking_state["last_seen"] = datetime.now()
+    user_state = _get_user_tracking_state(user_id)
+    user_state["last_seen"] = datetime.now()
     return {
         "status": "connected",
         "is_connected": True,
-        "is_paused": _tracking_state["is_paused"],
+        "is_paused": user_state["is_paused"],
         "user_id": user_id,
         "message": "TraceX successfully connected directly to browser telemetry."
     }
@@ -404,7 +401,7 @@ def get_current_activity(
       }
     """
     # 1. Check in-memory (most up-to-date — extension heartbeat sets this)
-    live = _current_activity.get(user_id) or _current_activity.get(1)
+    live = _current_activity.get(user_id)
     if live:
         started_at_str = live.get("started_at")
         started_at = None
@@ -435,16 +432,6 @@ def get_current_activity(
         .order_by(ActivityLog.created_at.desc())
         .first()
     )
-    if not active_log and user_id != 1:
-        active_log = (
-            db.query(ActivityLog)
-            .filter(
-                ActivityLog.user_id == 1,
-                ActivityLog.is_active == True
-            )
-            .order_by(ActivityLog.created_at.desc())
-            .first()
-        )
     if active_log:
         started = active_log.started_at or active_log.visit_time
         duration = 0
@@ -472,21 +459,18 @@ def get_current_activity(
 def create_activity_log(
     data: ActivityLogCreate,
     db: Session = Depends(get_db),
-    auth_user_id: int = Depends(get_optional_user_id)
+    current_user: User = Depends(get_current_user)
 ):
     """
     Store a single raw browser activity entry sent by the Chrome extension.
     If event_id is provided and already exists in the database, the existing
     record is returned instead of creating a duplicate (idempotent upsert).
 
-    Security: user_id from body is ignored in production-ready code.
-    auth_user_id is derived from the JWT token.
+    Security: user_id from body is ignored. Current user is strictly derived from verified JWT.
     """
-    _tracking_state["last_seen"] = datetime.now()
-
-    # Security: ALWAYS use auth_user_id from token, not body user_id.
-    # Falls back to 1 only in local dev (get_optional_user_id behavior).
-    target_user_id = auth_user_id
+    target_user_id = current_user.user_id
+    user_state = _get_user_tracking_state(target_user_id)
+    user_state["last_seen"] = datetime.now()
 
     # Resolve timestamps — accept both visit_time/exit_time (legacy) and
     # started_at/ended_at (new canonical form)
@@ -496,7 +480,8 @@ def create_activity_log(
     # Deduplication / Finalization: if event_id already exists, finalize and return the record
     if data.event_id:
         existing = db.query(ActivityLog).filter(
-            ActivityLog.event_id == data.event_id
+            ActivityLog.event_id == data.event_id,
+            ActivityLog.user_id == target_user_id
         ).first()
         if existing:
             # If the row was previously inserted as live (is_active=True), finalize it!
@@ -575,7 +560,7 @@ def create_activity_log(
 def create_activity_logs_batch(
     data: List[ActivityLogCreate],
     db: Session = Depends(get_db),
-    auth_user_id: int = Depends(get_optional_user_id)
+    current_user: User = Depends(get_current_user)
 ):
     """
     Store multiple raw browser activities sent in a single batch from the Chrome extension.
@@ -585,8 +570,9 @@ def create_activity_logs_batch(
     if not data:
         return {"message": "No activities provided", "count": 0, "skipped": 0, "activity_ids": []}
 
-    _tracking_state["last_seen"] = datetime.now()
-    target_user_id = auth_user_id
+    target_user_id = current_user.user_id
+    user_state = _get_user_tracking_state(target_user_id)
+    user_state["last_seen"] = datetime.now()
 
     # Collect known event_ids to skip duplicates efficiently (CTE-equivalent: one query)
     incoming_event_ids = [item.event_id for item in data if item.event_id]
@@ -595,6 +581,7 @@ def create_activity_logs_batch(
 
     if incoming_event_ids:
         existing_rows = db.query(ActivityLog).filter(
+            ActivityLog.user_id == target_user_id,
             ActivityLog.event_id.in_(incoming_event_ids)
         ).all()
         for er in existing_rows:
@@ -771,7 +758,7 @@ def get_today_activity_logs(
 def save_browser_history(
     data: List[Dict[str, Any]],
     db: Session = Depends(get_db),
-    auth_user_id: int = Depends(get_optional_user_id)
+    current_user: User = Depends(get_current_user)
 ):
     """
     Receive Chrome history records from the extension (chrome.history API).
@@ -780,6 +767,8 @@ def save_browser_history(
     """
     if not data:
         return {"message": "No history records provided", "count": 0}
+
+    auth_user_id = current_user.user_id
 
     saved = 0
     for item in data:
@@ -823,26 +812,52 @@ def save_browser_history(
                 pass
 
         try:
-            db.execute(text("""
-                INSERT INTO browser_history
-                    (user_id, url, domain, title, visit_count, first_visit_time, last_visit_time, source)
-                VALUES
-                    (:uid, :url, :domain, :title, :vc, :fv, :lv, 'chrome_history')
-                ON DUPLICATE KEY UPDATE
-                    title           = COALESCE(VALUES(title), title),
-                    visit_count     = GREATEST(visit_count, VALUES(visit_count)),
-                    last_visit_time = GREATEST(COALESCE(last_visit_time, '1970-01-01'), COALESCE(VALUES(last_visit_time), '1970-01-01')),
-                    first_visit_time = COALESCE(first_visit_time, VALUES(first_visit_time))
-            """), {
-                "uid":    auth_user_id,
-                "url":    url[:1000],
-                "domain": domain[:255],
-                "title":  (item.get("title") or "")[:500],
-                "vc":     item.get("visitCount") or item.get("visit_count") or 1,
-                "fv":     first_visit,
-                "lv":     last_visit,
-            })
-            saved += 1
+            if db.bind.dialect.name == "sqlite":
+                existing = db.query(BrowserHistory).filter(
+                    BrowserHistory.user_id == auth_user_id,
+                    BrowserHistory.url == url[:1000]
+                ).first()
+                if existing:
+                    if item.get("title"):
+                        existing.title = item.get("title")[:500]
+                    vc = item.get("visitCount") or item.get("visit_count") or 1
+                    existing.visit_count = max(existing.visit_count or 0, vc)
+                    if last_visit:
+                        existing.last_visit_time = last_visit
+                else:
+                    new_hist = BrowserHistory(
+                        user_id=auth_user_id,
+                        url=url[:1000],
+                        domain=domain[:255],
+                        title=(item.get("title") or "")[:500],
+                        visit_count=item.get("visitCount") or item.get("visit_count") or 1,
+                        first_visit_time=first_visit,
+                        last_visit_time=last_visit,
+                        source="chrome_history"
+                    )
+                    db.add(new_hist)
+                saved += 1
+            else:
+                db.execute(text("""
+                    INSERT INTO browser_history
+                        (user_id, url, domain, title, visit_count, first_visit_time, last_visit_time, source)
+                    VALUES
+                        (:uid, :url, :domain, :title, :vc, :fv, :lv, 'chrome_history')
+                    ON DUPLICATE KEY UPDATE
+                        title           = COALESCE(VALUES(title), title),
+                        visit_count     = GREATEST(visit_count, VALUES(visit_count)),
+                        last_visit_time = GREATEST(COALESCE(last_visit_time, '1970-01-01'), COALESCE(VALUES(last_visit_time), '1970-01-01')),
+                        first_visit_time = COALESCE(first_visit_time, VALUES(first_visit_time))
+                """), {
+                    "uid":    auth_user_id,
+                    "url":    url[:1000],
+                    "domain": domain[:255],
+                    "title":  (item.get("title") or "")[:500],
+                    "vc":     item.get("visitCount") or item.get("visit_count") or 1,
+                    "fv":     first_visit,
+                    "lv":     last_visit,
+                })
+                saved += 1
         except Exception as e:
             pass  # Skip bad rows silently
 
@@ -993,7 +1008,7 @@ def get_today_analytics(
     ]
 
     # Current live activity
-    live = _current_activity.get(user_id) or _current_activity.get(1)
+    live = _current_activity.get(user_id)
     current = None
     if live:
         started_str = live.get("started_at")
@@ -1257,10 +1272,10 @@ def get_dbms_demo(
     dups = db.execute(text("""
         SELECT event_id, COUNT(*) as cnt
         FROM activity_logs
-        WHERE event_id IS NOT NULL
+        WHERE event_id IS NOT NULL AND user_id = :uid
         GROUP BY event_id
         HAVING COUNT(*) > 1
-    """)).fetchall()
+    """), {"uid": user_id}).fetchall()
     results["duplicate_event_ids"] = [dict(r._mapping) for r in dups]
     results["duplicate_count"] = len(dups)
     results["deduplication_working"] = len(dups) == 0

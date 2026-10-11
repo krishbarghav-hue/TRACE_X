@@ -28,14 +28,24 @@ export default function ConnectExtension({ onNavigate, user }) {
     setChecking(true);
     try {
       // Ask an installed TraceX extension to identify itself to this page.
-      window.postMessage(
-        {
-          type: 'TRACEX_AUTO_CONNECT',
-          connectedByTraceX: true,
-          user: user || { user_id: 1, full_name: 'Student' },
-        },
-        '*'
-      );
+      const token = api.getToken();
+      if (user && token) {
+        window.postMessage(
+          {
+            type: 'TRACEX_AUTO_CONNECT',
+            connectedByTraceX: true,
+            user: {
+              user_id: user.user_id,
+              email: user.email,
+              full_name: user.full_name,
+              token: token,
+            },
+          },
+          window.location.origin
+        );
+      } else {
+        window.postMessage({ type: 'TRACEX_WEB_PING' }, window.location.origin);
+      }
 
       const status = await api.getTrackingStatus().catch(() => null);
       if (status?.is_connected) {
@@ -80,6 +90,25 @@ export default function ConnectExtension({ onNavigate, user }) {
         'TRACEX_EXTENSION_CONNECTED',
       ];
       if (!extensionMessages.includes(event.data.type)) return;
+
+      if (event.data.type === 'TRACEX_EXTENSION_AVAILABLE') {
+        const token = api.getToken();
+        if (user && token) {
+          window.postMessage(
+            {
+              type: 'TRACEX_AUTO_CONNECT',
+              connectedByTraceX: true,
+              user: {
+                user_id: user.user_id,
+                email: user.email,
+                full_name: user.full_name,
+                token: token,
+              },
+            },
+            window.location.origin
+          );
+        }
+      }
 
       setIsConnected(true);
       if (event.data.isPaused !== undefined) {

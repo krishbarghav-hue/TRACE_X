@@ -116,6 +116,9 @@ function AppRoutes() {
   };
 
   const handleLogout = () => {
+    try {
+      window.postMessage({ type: 'TRACEX_WEB_LOGOUT' }, window.location.origin);
+    } catch (e) {}
     api.logout();
     setCurrentUser(null);
     navigate('/login');

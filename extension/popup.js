@@ -1,8 +1,8 @@
 // TraceX popup.js — Polished production UI
 "use strict";
 
-const API_BASE_URL = "http://127.0.0.1:8000";
-const DASHBOARD_URL = "http://127.0.0.1:5173/today";
+const API_BASE_URL = "https://trace-x-bsms.onrender.com";
+const DASHBOARD_URL = "https://trace-x-bice.vercel.app/today";
 
 // ── DOM Elements ─────────────────────────────────────────────────────────────
 const trackingDot        = document.getElementById("trackingDot");
@@ -81,6 +81,20 @@ function setBackendOffline(pendingCount = 0) {
     offlineBufferMsg.style.display = "block";
 }
 
+function setExtensionUnlinked(pendingCount = 0) {
+    backendStatusGroup.className = "backend-status-badge offline";
+    backendDot.className = "backend-dot offline";
+    backendStatusText.textContent = "● Sign In Required";
+    queueCountEl.textContent = pendingCount;
+    if (pendingCount > 0) {
+        pendingGroup.className = "pending-count has-pending";
+        offlineBufferMsg.style.display = "block";
+    } else {
+        pendingGroup.className = "pending-count";
+        offlineBufferMsg.style.display = "none";
+    }
+}
+
 // ── Tracking state UI ─────────────────────────────────────────────────────────
 function updateTrackingUI(isPaused) {
     isCurrentlyPaused = !!isPaused;
@@ -113,9 +127,25 @@ function startDurationTimer() {
 
 // ── Fetch today's activity stats ─────────────────────────────────────────────
 async function fetchTodayStats() {
+    const { tracex_user } = await chrome.storage.local.get("tracex_user");
+    const headers = {};
+    if (tracex_user && tracex_user.token) {
+        headers["Authorization"] = `Bearer ${tracex_user.token}`;
+    } else {
+        // Not linked to website yet
+        chrome.runtime.sendMessage({ action: "getQueueSize" }, (resp) => {
+            setExtensionUnlinked(resp?.queueSize || 0);
+        });
+        visitCountEl.textContent  = "0";
+        activeTimeEl.textContent  = "0m";
+        domainCountEl.textContent = "0";
+        return;
+    }
+
     try {
         const resp = await fetch(`${API_BASE_URL}/api/activity-logs/analytics/today`, {
-            signal: AbortSignal.timeout(3500)
+            headers,
+            signal: AbortSignal.timeout(4500)
         });
         if (resp.ok) {
             const data = await resp.json();
@@ -123,18 +153,23 @@ async function fetchTodayStats() {
             activeTimeEl.textContent  = formatMinutes(data.total_seconds || 0);
             domainCountEl.textContent = data.unique_domains || 0;
             checkQueueSize(true);
+        } else if (resp.status === 401) {
+            chrome.runtime.sendMessage({ action: "getQueueSize" }, (resp) => {
+                setExtensionUnlinked(resp?.queueSize || 0);
+            });
         } else {
-            fallbackStats();
+            fallbackStats(headers);
         }
     } catch {
-        fallbackStats();
+        fallbackStats(headers);
     }
 }
 
-async function fallbackStats() {
+async function fallbackStats(headers = {}) {
     try {
         const resp = await fetch(`${API_BASE_URL}/api/activity-logs/today`, {
-            signal: AbortSignal.timeout(3000)
+            headers,
+            signal: AbortSignal.timeout(3500)
         });
         if (resp.ok) {
             const logs = await resp.json();
@@ -144,6 +179,10 @@ async function fallbackStats() {
             activeTimeEl.textContent  = formatMinutes(totalSeconds);
             domainCountEl.textContent = domains;
             checkQueueSize(true);
+        } else if (resp.status === 401) {
+            chrome.runtime.sendMessage({ action: "getQueueSize" }, (resp) => {
+                setExtensionUnlinked(resp?.queueSize || 0);
+            });
         } else {
             checkQueueSize(false);
         }
@@ -169,7 +208,12 @@ function isTraceXUrl(url) {
     try {
         const parsed = new URL(url);
         const host = parsed.hostname.toLowerCase();
-        if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
+        if (
+            host === "localhost" ||
+            host === "127.0.0.1" ||
+            host === "::1" ||
+            host === "trace-x-bice.vercel.app"
+        ) {
             return true;
         }
         return false;
@@ -235,12 +279,18 @@ toggleTrackingBtn.addEventListener("click", () => {
             });
         }
 
-        // Inform backend
-        fetch(`${API_BASE_URL}/api/activity-logs/tracking-status`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ is_paused: nextPaused })
-        }).catch(() => {});
+        // Inform backend if authenticated
+        chrome.storage.local.get(["tracex_user"], (res) => {
+            const headers = { "Content-Type": "application/json" };
+            if (res.tracex_user && res.tracex_user.token) {
+                headers["Authorization"] = `Bearer ${res.tracex_user.token}`;
+            }
+            fetch(`${API_BASE_URL}/api/activity-logs/tracking-status`, {
+                method: "POST",
+                headers,
+                body: JSON.stringify({ is_paused: nextPaused })
+            }).catch(() => {});
+        });
     });
 });
 

@@ -24,7 +24,52 @@ async function request(endpoint, options = {}) {
     headers['Content-Type'] = 'application/json';
   }
 
-  const response = await fetch(url, { ...options, headers });
+  // Choose a reasonable timeout strategy for Render cold starts (45s)
+  // without making the UI hang indefinitely. Callers can override via options.timeout.
+  const timeoutMs = typeof options.timeout === 'number' ? options.timeout : 45_000;
+  const timeoutSeconds = Math.round(timeoutMs / 1000);
+
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  let removeCallerListener = null;
+  if (options.signal) {
+    if (options.signal.aborted) {
+      clearTimeout(timeoutId);
+      throw options.signal.reason || new DOMException('The user aborted a request.', 'AbortError');
+    }
+    const onCallerAbort = () => {
+      controller.abort(options.signal.reason);
+    };
+    options.signal.addEventListener('abort', onCallerAbort, { once: true });
+    removeCallerListener = () => options.signal.removeEventListener('abort', onCallerAbort);
+  }
+
+  let response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (timedOut) {
+      throw new Error(`Request timed out after ${timeoutSeconds}s — backend may be waking up. Please retry.`);
+    }
+    if (options.signal?.aborted) {
+      throw options.signal.reason || err;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+    if (removeCallerListener) {
+      removeCallerListener();
+    }
+  }
 
   if (!response.ok) {
     let errorDetail = 'API request failed';

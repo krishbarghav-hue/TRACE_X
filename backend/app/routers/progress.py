@@ -7,9 +7,9 @@ from app.models.course import Course
 from app.models.topic import Topic
 from app.models.resource import Resource
 from app.models.progress import Progress, ProgressStatus
+from app.models.user import User
 from app.schemas.progress import ProgressCreate, ProgressUpdate, ProgressResponse
-
-TEST_USER_ID = 1
+from app.utils.auth import get_current_user
 
 router = APIRouter(prefix="/api/progress", tags=["Progress"])
 
@@ -17,14 +17,18 @@ router = APIRouter(prefix="/api/progress", tags=["Progress"])
 # ── CREATE PROGRESS ───────────────────────────────────────────────────────────
 @router.post("", response_model=ProgressResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=ProgressResponse, status_code=status.HTTP_201_CREATED, include_in_schema=False)
-def create_progress(data: ProgressCreate, db: Session = Depends(get_db)):
+def create_progress(
+    data: ProgressCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Initialize progress tracking for a topic and optional resource.
     """
-    # 1. Validate topic exists
+    # 1. Validate topic exists and belongs to current user's course
     topic = db.query(Topic).join(Course, Topic.course_id == Course.course_id).filter(
         Topic.topic_id == data.topic_id,
-        Course.user_id == TEST_USER_ID
+        Course.user_id == current_user.user_id
     ).first()
     if not topic:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topic not found.")
@@ -33,7 +37,7 @@ def create_progress(data: ProgressCreate, db: Session = Depends(get_db)):
     if data.resource_id is not None:
         resource = db.query(Resource).filter(
             Resource.resource_id == data.resource_id,
-            Resource.user_id == TEST_USER_ID
+            Resource.user_id == current_user.user_id
         ).first()
         if not resource:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found.")
@@ -42,7 +46,7 @@ def create_progress(data: ProgressCreate, db: Session = Depends(get_db)):
 
     # 3. Check unique constraint (user_id, topic_id, resource_id)
     existing = db.query(Progress).filter(
-        Progress.user_id == TEST_USER_ID,
+        Progress.user_id == current_user.user_id,
         Progress.topic_id == data.topic_id,
         Progress.resource_id == data.resource_id
     ).first()
@@ -65,7 +69,7 @@ def create_progress(data: ProgressCreate, db: Session = Depends(get_db)):
         prog_status = ProgressStatus.in_progress
 
     new_prog = Progress(
-        user_id=TEST_USER_ID,
+        user_id=current_user.user_id,
         topic_id=data.topic_id,
         resource_id=data.resource_id,
         status=prog_status,
@@ -80,31 +84,46 @@ def create_progress(data: ProgressCreate, db: Session = Depends(get_db)):
 
 # ── GET PROGRESS BY TOPIC ─────────────────────────────────────────────────────
 @router.get("/topic/{topic_id}", response_model=List[ProgressResponse])
-def get_progress_by_topic(topic_id: int, db: Session = Depends(get_db)):
+def get_progress_by_topic(
+    topic_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Retrieve all progress entries for a specific topic.
     """
+    topic = db.query(Topic).join(Course, Topic.course_id == Course.course_id).filter(
+        Topic.topic_id == topic_id,
+        Course.user_id == current_user.user_id
+    ).first()
+    if not topic:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topic not found.")
+
     records = db.query(Progress).filter(
         Progress.topic_id == topic_id,
-        Progress.user_id == TEST_USER_ID
+        Progress.user_id == current_user.user_id
     ).all()
     return records
 
 
 # ── GET PROGRESS BY COURSE ────────────────────────────────────────────────────
 @router.get("/course/{course_id}", response_model=List[ProgressResponse])
-def get_progress_by_course(course_id: int, db: Session = Depends(get_db)):
+def get_progress_by_course(
+    course_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Retrieve all progress entries for all topics in a given course.
     """
-    course = db.query(Course).filter(Course.course_id == course_id, Course.user_id == TEST_USER_ID).first()
+    course = db.query(Course).filter(Course.course_id == course_id, Course.user_id == current_user.user_id).first()
     if not course:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found.")
 
     records = (
         db.query(Progress)
         .join(Topic, Progress.topic_id == Topic.topic_id)
-        .filter(Topic.course_id == course_id, Progress.user_id == TEST_USER_ID)
+        .filter(Topic.course_id == course_id, Progress.user_id == current_user.user_id)
         .all()
     )
     return records
@@ -112,13 +131,18 @@ def get_progress_by_course(course_id: int, db: Session = Depends(get_db)):
 
 # ── UPDATE PROGRESS ───────────────────────────────────────────────────────────
 @router.put("/{progress_id}", response_model=ProgressResponse)
-def update_progress(progress_id: int, data: ProgressUpdate, db: Session = Depends(get_db)):
+def update_progress(
+    progress_id: int,
+    data: ProgressUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Update progress status and completion percentage.
     """
     record = db.query(Progress).filter(
         Progress.progress_id == progress_id,
-        Progress.user_id == TEST_USER_ID
+        Progress.user_id == current_user.user_id
     ).first()
     if not record:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Progress record not found.")
@@ -138,3 +162,4 @@ def update_progress(progress_id: int, data: ProgressUpdate, db: Session = Depend
     db.commit()
     db.refresh(record)
     return record
+

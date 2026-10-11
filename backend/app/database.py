@@ -47,7 +47,18 @@ if os.getenv("DB_SSL", "false").lower() in ("true", "1", "yes"):
 
 engine = create_engine(
     DATABASE_URL,
+    # Validate connections before use — catches stale sockets immediately
     pool_pre_ping=True,
+    # Recycle connections after 3 minutes; Aiven/Render firewalls typically
+    # kill idle TCP sockets around 5 minutes, so staying well below that
+    # prevents the wsarecv "established connection aborted" error.
+    pool_recycle=180,
+    # How long to wait for a connection from the pool before raising
+    pool_timeout=30,
+    # Steady-state pool size (connections kept open)
+    pool_size=5,
+    # Extra overflow connections allowed under high load
+    max_overflow=10,
     echo=False,
     connect_args=connect_args,
 )
@@ -62,8 +73,21 @@ Base = declarative_base()
 
 
 def get_db():
+    """
+    Yield a SQLAlchemy DB session for a single request lifecycle.
+    Properly rolls back and closes failed sessions without attempting unsafe
+    re-yields or retrying in-flight writes.
+    Connection health and recovery from drops are managed safely at the pool level
+    via pool_pre_ping=True and pool_recycle=180.
+    """
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         db.close()

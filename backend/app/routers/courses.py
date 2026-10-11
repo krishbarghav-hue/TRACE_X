@@ -4,10 +4,9 @@ from typing import List
 
 from app.database import get_db
 from app.models.course import Course
+from app.models.user import User
 from app.schemas.course import CourseCreate, CourseUpdate, CourseResponse
-
-# Fixed test user ID for development without JWT authentication
-TEST_USER_ID = 1
+from app.utils.auth import get_current_user
 
 # Create router for all course-related endpoints
 router = APIRouter(prefix="/api/courses", tags=["Courses"])
@@ -16,14 +15,18 @@ router = APIRouter(prefix="/api/courses", tags=["Courses"])
 # ── CREATE COURSE ─────────────────────────────────────────────────────────────
 @router.post("", response_model=CourseResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=CourseResponse, status_code=status.HTTP_201_CREATED, include_in_schema=False)
-def create_course(data: CourseCreate, db: Session = Depends(get_db)):
+def create_course(
+    data: CourseCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
-    Create a new course for the current user.
+    Create a new course for the authenticated user.
     """
     # Check if a course with the same name already exists for this user
     existing_course = (
         db.query(Course)
-        .filter(Course.user_id == TEST_USER_ID, Course.course_name == data.course_name)
+        .filter(Course.user_id == current_user.user_id, Course.course_name == data.course_name)
         .first()
     )
     if existing_course:
@@ -33,7 +36,7 @@ def create_course(data: CourseCreate, db: Session = Depends(get_db)):
         )
 
     new_course = Course(
-        user_id=TEST_USER_ID,
+        user_id=current_user.user_id,
         course_name=data.course_name,
         description=data.description
     )
@@ -48,23 +51,30 @@ def create_course(data: CourseCreate, db: Session = Depends(get_db)):
 # ── GET ALL COURSES ───────────────────────────────────────────────────────────
 @router.get("", response_model=List[CourseResponse])
 @router.get("/", response_model=List[CourseResponse], include_in_schema=False)
-def get_courses(db: Session = Depends(get_db)):
+def get_courses(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
-    Retrieve all courses for the current user.
+    Retrieve all courses for the authenticated user.
     """
-    courses = db.query(Course).filter(Course.user_id == TEST_USER_ID).all()
+    courses = db.query(Course).filter(Course.user_id == current_user.user_id).all()
     return courses
 
 
 # ── GET SINGLE COURSE ─────────────────────────────────────────────────────────
 @router.get("/{course_id}", response_model=CourseResponse)
-def get_course(course_id: int, db: Session = Depends(get_db)):
+def get_course(
+    course_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Retrieve a specific course by its ID.
     """
     course = (
         db.query(Course)
-        .filter(Course.course_id == course_id, Course.user_id == TEST_USER_ID)
+        .filter(Course.course_id == course_id, Course.user_id == current_user.user_id)
         .first()
     )
     if not course:
@@ -77,13 +87,18 @@ def get_course(course_id: int, db: Session = Depends(get_db)):
 
 # ── UPDATE COURSE ─────────────────────────────────────────────────────────────
 @router.put("/{course_id}", response_model=CourseResponse)
-def update_course(course_id: int, data: CourseUpdate, db: Session = Depends(get_db)):
+def update_course(
+    course_id: int,
+    data: CourseUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Update an existing course by ID.
     """
     course = (
         db.query(Course)
-        .filter(Course.course_id == course_id, Course.user_id == TEST_USER_ID)
+        .filter(Course.course_id == course_id, Course.user_id == current_user.user_id)
         .first()
     )
     if not course:
@@ -97,7 +112,7 @@ def update_course(course_id: int, data: CourseUpdate, db: Session = Depends(get_
         conflict = (
             db.query(Course)
             .filter(
-                Course.user_id == TEST_USER_ID,
+                Course.user_id == current_user.user_id,
                 Course.course_name == data.course_name,
                 Course.course_id != course_id
             )
@@ -120,13 +135,17 @@ def update_course(course_id: int, data: CourseUpdate, db: Session = Depends(get_
 
 # ── DELETE COURSE ─────────────────────────────────────────────────────────────
 @router.delete("/{course_id}")
-def delete_course(course_id: int, db: Session = Depends(get_db)):
+def delete_course(
+    course_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Delete a course by ID.
     """
     course = (
         db.query(Course)
-        .filter(Course.course_id == course_id, Course.user_id == TEST_USER_ID)
+        .filter(Course.course_id == course_id, Course.user_id == current_user.user_id)
         .first()
     )
     if not course:
@@ -138,3 +157,4 @@ def delete_course(course_id: int, db: Session = Depends(get_db)):
     db.delete(course)
     db.commit()
     return {"message": "Course deleted successfully", "course_id": course_id}
+

@@ -40,7 +40,7 @@ class ActivityLogCreate(BaseModel):
             # 1. user_id: safely extract if client passed dict/object or string
             raw_user = values.get("user_id")
             if isinstance(raw_user, dict):
-                values["user_id"] = raw_user.get("user_id") or raw_user.get("id") or 1
+                values["user_id"] = raw_user.get("user_id") or raw_user.get("id") or None
             elif raw_user is not None:
                 try:
                     values["user_id"] = int(raw_user)

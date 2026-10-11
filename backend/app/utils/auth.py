@@ -14,9 +14,60 @@ from app.models.user import User
 
 load_dotenv()
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-SECRET_KEY  = os.getenv("SECRET_KEY", "fallback_secret_key")
-ALGORITHM   = "HS256"
+INSECURE_SECRETS = {
+    "fallback_secret_key",
+    "secret",
+    "secret_key",
+    "changeme",
+    "your_secret_key",
+    "replace_with_a_long_random_secret",
+    "test_secret",
+}
+
+
+def get_secret_key() -> str:
+    """
+    Retrieve and validate the JWT secret key.
+    Fails safely without printing or leaking the secret value.
+    Preserves local development using an explicitly configured local secret.
+    """
+    env_name = os.getenv("ENVIRONMENT", os.getenv("ENV", "development")).strip().lower()
+    is_production = env_name in ("production", "prod") or bool(os.getenv("RENDER"))
+
+    secret = os.getenv("SECRET_KEY") or (os.getenv("DEV_SECRET_KEY") if not is_production else None)
+
+    if not secret or not secret.strip():
+        if is_production:
+            raise RuntimeError("Missing required SECRET_KEY environment variable in production.")
+        raise RuntimeError(
+            "SECRET_KEY is not configured. For local development, explicitly configure "
+            "SECRET_KEY or DEV_SECRET_KEY in your environment or backend/.env."
+        )
+
+    clean_secret = secret.strip()
+    if clean_secret.lower() in INSECURE_SECRETS:
+        raise RuntimeError(
+            "Configured SECRET_KEY is a known insecure placeholder. "
+            "Please configure a strong, unique secret."
+        )
+
+    if is_production and len(clean_secret) < 32:
+        raise RuntimeError(
+            "Configured SECRET_KEY in production is too short (must be at least 32 characters)."
+        )
+
+    return clean_secret
+
+
+def _init_module_secret() -> str:
+    try:
+        return get_secret_key()
+    except RuntimeError:
+        return ""
+
+
+SECRET_KEY = _init_module_secret()
+ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 24 * 7   # Token is valid for 7 days
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -31,8 +82,8 @@ def hash_password(plain_password: str) -> str:
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Check if plain password matches the stored hash."""
-    if hashed_password == "test_password_hash":
-        return True
+    if not hashed_password:
+        return False
     try:
         pwd_bytes = plain_password.encode('utf-8')[:72]
         return bcrypt.checkpw(pwd_bytes, hashed_password.encode('utf-8'))
@@ -42,13 +93,14 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_access_token(user_id: int, email: str) -> str:
     """Create a JWT token containing the user's id and email."""
+    secret = get_secret_key()
     expire = datetime.utcnow() + timedelta(hours=TOKEN_EXPIRE_HOURS)
     payload = {
         "sub": str(user_id),
         "email": email,
         "exp": expire
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(payload, secret, algorithm=ALGORITHM)
 
 
 def get_current_user(
@@ -67,11 +119,12 @@ def get_current_user(
 
     try:
         token = credentials.credentials
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        secret = get_secret_key()
+        payload = jwt.decode(token, secret, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
         if user_id is None:
             raise credentials_error
-    except JWTError:
+    except (JWTError, RuntimeError):
         raise credentials_error
 
     user = db.query(User).filter(User.user_id == int(user_id)).first()
@@ -84,18 +137,20 @@ def get_current_user(
     return user
 
 
-def get_optional_user_id(authorization: Optional[str] = Header(None)) -> int:
+def get_optional_user_id(authorization: Optional[str] = Header(None)) -> Optional[int]:
     """
     Extract user_id from optional Authorization header.
-    Falls back to user_id=1 for seamless backward compatibility during local development.
+    Returns None if missing or invalid; never substitutes user 1.
     """
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ")[1]
         try:
-            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            secret = get_secret_key()
+            payload = jwt.decode(token, secret, algorithms=[ALGORITHM])
             uid = payload.get("sub")
             if uid:
                 return int(uid)
         except Exception:
-            pass
-    return 1
+            return None
+    return None
+

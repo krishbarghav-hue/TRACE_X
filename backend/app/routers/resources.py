@@ -8,8 +8,9 @@ from app.models.course import Course
 from app.models.topic import Topic
 from app.models.resource import Resource, ResourceType
 from app.models.activity_log import ActivityLog
+from app.models.user import User
 from app.schemas.resource import ResourceCreate, ResourceUpdate, ResourceResponse
-from app.routers.activity_logs import get_effective_user_id
+from app.utils.auth import get_current_user
 
 router = APIRouter(prefix="/api/resources", tags=["Resources"])
 
@@ -23,14 +24,14 @@ def get_all_resources(
     resource_type: Optional[str] = Query(None, description="Filter by resource type"),
     sort_by: Optional[str] = Query("recent", description="Sort by: recent, duration, visits"),
     limit: Optional[int] = Query(100, ge=1, le=500),
-    user_id: int = Depends(get_effective_user_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Retrieve auto-discovered and user resources for the effective user.
+    Retrieve auto-discovered and user resources for the authenticated user.
     Uses activity telemetry as primary source of discovered web resources.
     """
-    query = db.query(Resource).filter(Resource.user_id == user_id)
+    query = db.query(Resource).filter(Resource.user_id == current_user.user_id)
 
     if search and search.strip():
         term = f"%{search.strip()}%"
@@ -64,7 +65,7 @@ def get_all_resources(
 @router.post("/", response_model=ResourceResponse, status_code=status.HTTP_201_CREATED, include_in_schema=False)
 def create_resource(
     data: ResourceCreate,
-    user_id: int = Depends(get_effective_user_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -72,7 +73,7 @@ def create_resource(
     """
     # 1. Validate course exists if provided
     if data.course_id:
-        course = db.query(Course).filter(Course.course_id == data.course_id, Course.user_id == user_id).first()
+        course = db.query(Course).filter(Course.course_id == data.course_id, Course.user_id == current_user.user_id).first()
         if not course:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -98,7 +99,7 @@ def create_resource(
             pass
 
     new_resource = Resource(
-        user_id=user_id,
+        user_id=current_user.user_id,
         course_id=data.course_id,
         topic_id=data.topic_id,
         resource_type=data.resource_type,
@@ -121,15 +122,19 @@ def create_resource(
 @router.get("/course/{course_id}", response_model=List[ResourceResponse])
 def get_resources_by_course(
     course_id: int,
-    user_id: int = Depends(get_effective_user_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Retrieve all resources under a specific course.
     """
+    course = db.query(Course).filter(Course.course_id == course_id, Course.user_id == current_user.user_id).first()
+    if not course:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found.")
+
     resources = db.query(Resource).filter(
         Resource.course_id == course_id,
-        Resource.user_id == user_id
+        Resource.user_id == current_user.user_id
     ).all()
     return resources
 
@@ -138,15 +143,24 @@ def get_resources_by_course(
 @router.get("/topic/{topic_id}", response_model=List[ResourceResponse])
 def get_resources_by_topic(
     topic_id: int,
-    user_id: int = Depends(get_effective_user_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Retrieve all resources under a specific topic.
     """
+    topic = (
+        db.query(Topic)
+        .join(Course, Topic.course_id == Course.course_id)
+        .filter(Topic.topic_id == topic_id, Course.user_id == current_user.user_id)
+        .first()
+    )
+    if not topic:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topic not found.")
+
     resources = db.query(Resource).filter(
         Resource.topic_id == topic_id,
-        Resource.user_id == user_id
+        Resource.user_id == current_user.user_id
     ).all()
     return resources
 
@@ -155,7 +169,7 @@ def get_resources_by_topic(
 @router.get("/{resource_id}", response_model=ResourceResponse)
 def get_resource(
     resource_id: int,
-    user_id: int = Depends(get_effective_user_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -163,7 +177,7 @@ def get_resource(
     """
     resource = db.query(Resource).filter(
         Resource.resource_id == resource_id,
-        Resource.user_id == user_id
+        Resource.user_id == current_user.user_id
     ).first()
     if not resource:
         raise HTTPException(
@@ -178,7 +192,7 @@ def get_resource(
 def update_resource(
     resource_id: int,
     data: ResourceUpdate,
-    user_id: int = Depends(get_effective_user_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -186,7 +200,7 @@ def update_resource(
     """
     resource = db.query(Resource).filter(
         Resource.resource_id == resource_id,
-        Resource.user_id == user_id
+        Resource.user_id == current_user.user_id
     ).first()
     if not resource:
         raise HTTPException(
@@ -221,7 +235,7 @@ def update_resource(
 @router.delete("/{resource_id}")
 def delete_resource(
     resource_id: int,
-    user_id: int = Depends(get_effective_user_id),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -229,7 +243,7 @@ def delete_resource(
     """
     resource = db.query(Resource).filter(
         Resource.resource_id == resource_id,
-        Resource.user_id == user_id
+        Resource.user_id == current_user.user_id
     ).first()
     if not resource:
         raise HTTPException(
@@ -240,3 +254,4 @@ def delete_resource(
     db.delete(resource)
     db.commit()
     return {"message": "Resource deleted successfully", "resource_id": resource_id}
+

@@ -5,9 +5,9 @@ from typing import List
 from app.database import get_db
 from app.models.course import Course
 from app.models.topic import Topic
+from app.models.user import User
 from app.schemas.topic import TopicCreate, TopicUpdate, TopicResponse
-
-TEST_USER_ID = 1
+from app.utils.auth import get_current_user
 
 router = APIRouter(prefix="/api/topics", tags=["Topics"])
 
@@ -15,12 +15,16 @@ router = APIRouter(prefix="/api/topics", tags=["Topics"])
 # ── CREATE TOPIC ──────────────────────────────────────────────────────────────
 @router.post("", response_model=TopicResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=TopicResponse, status_code=status.HTTP_201_CREATED, include_in_schema=False)
-def create_topic(data: TopicCreate, db: Session = Depends(get_db)):
+def create_topic(
+    data: TopicCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Create a new topic or subtopic for a course.
     """
     # 1. Validate course exists and belongs to current user
-    course = db.query(Course).filter(Course.course_id == data.course_id, Course.user_id == TEST_USER_ID).first()
+    course = db.query(Course).filter(Course.course_id == data.course_id, Course.user_id == current_user.user_id).first()
     if not course:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -67,11 +71,15 @@ def create_topic(data: TopicCreate, db: Session = Depends(get_db)):
 
 # ── GET TOPICS BY COURSE ──────────────────────────────────────────────────────
 @router.get("/course/{course_id}", response_model=List[TopicResponse])
-def get_topics_by_course(course_id: int, db: Session = Depends(get_db)):
+def get_topics_by_course(
+    course_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Retrieve all topics and subtopics for a specific course.
     """
-    course = db.query(Course).filter(Course.course_id == course_id, Course.user_id == TEST_USER_ID).first()
+    course = db.query(Course).filter(Course.course_id == course_id, Course.user_id == current_user.user_id).first()
     if not course:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -84,14 +92,18 @@ def get_topics_by_course(course_id: int, db: Session = Depends(get_db)):
 
 # ── GET SINGLE TOPIC ──────────────────────────────────────────────────────────
 @router.get("/{topic_id}", response_model=TopicResponse)
-def get_topic(topic_id: int, db: Session = Depends(get_db)):
+def get_topic(
+    topic_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Retrieve a specific topic by its ID.
     """
     topic = (
         db.query(Topic)
         .join(Course, Topic.course_id == Course.course_id)
-        .filter(Topic.topic_id == topic_id, Course.user_id == TEST_USER_ID)
+        .filter(Topic.topic_id == topic_id, Course.user_id == current_user.user_id)
         .first()
     )
     if not topic:
@@ -104,14 +116,19 @@ def get_topic(topic_id: int, db: Session = Depends(get_db)):
 
 # ── UPDATE TOPIC ──────────────────────────────────────────────────────────────
 @router.put("/{topic_id}", response_model=TopicResponse)
-def update_topic(topic_id: int, data: TopicUpdate, db: Session = Depends(get_db)):
+def update_topic(
+    topic_id: int,
+    data: TopicUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Update topic name, description, or parent topic.
     """
     topic = (
         db.query(Topic)
         .join(Course, Topic.course_id == Course.course_id)
-        .filter(Topic.topic_id == topic_id, Course.user_id == TEST_USER_ID)
+        .filter(Topic.topic_id == topic_id, Course.user_id == current_user.user_id)
         .first()
     )
     if not topic:
@@ -164,14 +181,18 @@ def update_topic(topic_id: int, data: TopicUpdate, db: Session = Depends(get_db)
 
 # ── DELETE TOPIC ──────────────────────────────────────────────────────────────
 @router.delete("/{topic_id}")
-def delete_topic(topic_id: int, db: Session = Depends(get_db)):
+def delete_topic(
+    topic_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Delete a topic by ID. Child subtopics have parent_topic_id SET NULL per database schema.
     """
     topic = (
         db.query(Topic)
         .join(Course, Topic.course_id == Course.course_id)
-        .filter(Topic.topic_id == topic_id, Course.user_id == TEST_USER_ID)
+        .filter(Topic.topic_id == topic_id, Course.user_id == current_user.user_id)
         .first()
     )
     if not topic:
@@ -183,3 +204,4 @@ def delete_topic(topic_id: int, db: Session = Depends(get_db)):
     db.delete(topic)
     db.commit()
     return {"message": "Topic deleted successfully", "topic_id": topic_id}
+

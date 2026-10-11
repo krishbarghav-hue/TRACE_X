@@ -13,7 +13,7 @@
 
 "use strict";
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+const API_BASE_URL = "https://trace-x-bsms.onrender.com";
 const IDLE_THRESHOLD_SECS = 60;      // 60 seconds of inactivity → idle
 const HEARTBEAT_INTERVAL = 12_000;  // send live activity every 12 seconds
 const RETRY_INTERVAL_MS = 30_000;  // retry pending queue every 30 seconds
@@ -67,13 +67,16 @@ function isPdfUrl(url) {
 // ── Check if URL belongs to TraceX web dashboard ──────────────────────────────
 function isTraceXUrl(url) {
     if (!url) return false;
+
     try {
-        const parsed = new URL(url);
-        const host = parsed.hostname.toLowerCase();
-        if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
-            return true;
-        }
-        return false;
+        const host = new URL(url).hostname.toLowerCase();
+
+        return (
+            host === "localhost" ||
+            host === "127.0.0.1" ||
+            host === "::1" ||
+            host === "trace-x-bice.vercel.app"
+        );
     } catch {
         return false;
     }
@@ -152,6 +155,13 @@ async function getAuthHeaders() {
 async function enqueueActivity(url, domain, title, startTime, exitTime, durationSeconds, eventId = null) {
     if (!url || !domain || durationSeconds < MIN_DURATION_SECONDS || isTraceXUrl(url)) return;
 
+    const { user } = await getAuthHeaders();
+    if (!user || !user.token || !user.user_id) {
+        // Do not record or queue unauthenticated activities to prevent cross-user data leaks
+        return;
+    }
+    const currentUserId = user.user_id;
+
     const pageTitle = title || (isPdfUrl(url) ? "PDF Document" : domain);
     const resolvedEventId = eventId || generateEventId(domain, startTime);
 
@@ -160,6 +170,7 @@ async function enqueueActivity(url, domain, title, startTime, exitTime, duration
 
     const event = {
         event_id: resolvedEventId,
+        user_id: currentUserId,
         source: "chrome",
         url: url,
         domain: domain,
@@ -181,7 +192,7 @@ async function enqueueActivity(url, domain, title, startTime, exitTime, duration
     if (!pending.some(e => e.event_id === resolvedEventId)) {
         pending.push(event);
         await chrome.storage.local.set({ tracex_pending: pending });
-        console.log(`[TraceX] Enqueued: ${domain} ${durationSeconds}s (queue: ${pending.length})`);
+        console.log(`[TraceX] Enqueued: ${domain} ${durationSeconds}s (user: ${currentUserId}, queue: ${pending.length})`);
     }
 
     flushPendingQueue();
@@ -192,10 +203,23 @@ async function flushPendingQueue() {
     const { tracex_pending } = await chrome.storage.local.get("tracex_pending");
     if (!tracex_pending || tracex_pending.length === 0) return;
 
+    const { headers, user } = await getAuthHeaders();
+    if (!user || !user.token || !user.user_id) {
+        // Not linked or missing JWT: do not flush queue
+        return;
+    }
+
+    const currentUserId = user.user_id;
     const stillPending = [];
     let sent = 0, failed = 0;
 
     for (const event of tracex_pending) {
+        // Strict user boundary: never submit User A's queued activities under User B's token
+        if (!event.user_id || event.user_id !== currentUserId) {
+            stillPending.push(event);
+            continue;
+        }
+
         const success = await sendActivityToBackend(event);
         if (success) {
             sent++;
@@ -215,7 +239,9 @@ async function flushPendingQueue() {
 // ── Send a single completed activity event to FastAPI ─────────────────────────
 async function sendActivityToBackend(event) {
     try {
-        const { headers } = await getAuthHeaders();
+        const { headers, user } = await getAuthHeaders();
+        if (!user || !user.token) return false;
+
         const response = await fetch(`${API_BASE_URL}/api/activity-logs`, {
             method: "POST",
             headers,
@@ -226,9 +252,9 @@ async function sendActivityToBackend(event) {
         if (response.ok || response.status === 409) {
             return true;
         }
-        const errText = await response.text();
-        console.error(`[TraceX] Backend validation error:`, response.status, errText);
-        console.error(`[TraceX] Outgoing event was:`, JSON.stringify(event));
+        if (response.status === 401) {
+            console.warn("[TraceX] Unauthorized event submission (token expired/invalid).");
+        }
         return false;
     } catch {
         return false;  // Network error or timeout
@@ -240,6 +266,11 @@ async function sendActivityToBackend(event) {
 async function sendHeartbeat() {
     try {
         const { headers, user } = await getAuthHeaders();
+        if (!user || !user.token) {
+            // Extension not yet linked to an active session
+            return;
+        }
+
         const { isPaused } = await chrome.storage.local.get("isPaused");
         const isSelf = state.activeUrl && isTraceXUrl(state.activeUrl);
 
@@ -300,6 +331,12 @@ async function stopTracking() {
 // ── Start tracking a new tab/page ─────────────────────────────────────────────
 async function startTracking(tab) {
     if (state.isTrackingPaused || !tab || !tab.url) return;
+
+    const { user } = await getAuthHeaders();
+    if (!user || !user.token || !user.user_id) {
+        clearPersistedState();
+        return;
+    }
 
     // Ignore TraceX dashboard completely
     if (isTraceXUrl(tab.url)) {
@@ -479,12 +516,42 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     } else if (request.action === "forceFlush") {
         flushPendingQueue().then(() => sendResponse({ ok: true }));
         return true;
-    } else if (request.action === "userConnected") {
+    } else if (request.action === "connectUser" || request.action === "userConnected") {
         console.log("[TraceX] Linked to user:", request.user);
-        sendHeartbeat();
-        sendResponse({ ok: true });
+        chrome.storage.local.get(["tracex_user", "tracex_pending"], (stored) => {
+            const prevUser = stored.tracex_user;
+            let pending = stored.tracex_pending || [];
+            if (prevUser && prevUser.user_id && prevUser.user_id !== request.user.user_id) {
+                pending = [];
+                clearPersistedState();
+            } else if (pending.length > 0) {
+                pending = pending.filter(e => e.user_id === request.user.user_id);
+            }
+            chrome.storage.local.set({
+                tracex_user: request.user,
+                tracex_connected_by_tracex: true,
+                tracex_pending: pending
+            }, () => {
+                sendHeartbeat();
+                flushPendingQueue();
+                sendResponse({ ok: true, user: request.user });
+            });
+        });
         return true;
-    } else if (request.action === "syncChromeHistory") {
+    } else if (request.action === "logoutUser") {
+        console.log("[TraceX] Disconnecting user session");
+        chrome.storage.local.remove(["tracex_user", "tracex_connected_by_tracex", "tracex_pending"], () => {
+            clearPersistedState();
+            sendResponse({ ok: true });
+        });
+        return true;
+    } else if (request.action === "togglePause") {
+        state.isTrackingPaused = !!request.isPaused;
+        chrome.storage.local.set({ isPaused: !!request.isPaused }, () => {
+            sendResponse({ success: true, isPaused: !!request.isPaused });
+        });
+        return true;
+    } else if (request.action === "syncChromeHistory" || request.action === "syncHistory") {
         syncChromeHistory().then(() => sendResponse({ ok: true }));
         return true;
     }
@@ -496,17 +563,39 @@ chrome.runtime.onMessageExternal.addListener((request, sender, sendResponse) => 
     if (request.action === "ping") {
         sendResponse({ installed: true, version: "1.2", isPaused: state.isTrackingPaused });
     } else if (request.action === "connectUser") {
-        chrome.storage.local.set({ tracex_user: request.user }, () => {
-            sendHeartbeat();
-            sendResponse({ success: true, user: request.user });
+        chrome.storage.local.get(["tracex_user", "tracex_pending"], (stored) => {
+            const prevUser = stored.tracex_user;
+            let pending = stored.tracex_pending || [];
+            if (prevUser && prevUser.user_id && prevUser.user_id !== request.user.user_id) {
+                pending = [];
+                clearPersistedState();
+            } else if (pending.length > 0) {
+                pending = pending.filter(e => e.user_id === request.user.user_id);
+            }
+            chrome.storage.local.set({
+                tracex_user: request.user,
+                tracex_connected_by_tracex: true,
+                tracex_pending: pending
+            }, () => {
+                sendHeartbeat();
+                flushPendingQueue();
+                sendResponse({ success: true, user: request.user });
+            });
+        });
+        return true;
+    } else if (request.action === "logoutUser") {
+        chrome.storage.local.remove(["tracex_user", "tracex_connected_by_tracex", "tracex_pending"], () => {
+            clearPersistedState();
+            sendResponse({ success: true });
         });
         return true;
     } else if (request.action === "togglePause") {
+        state.isTrackingPaused = !!request.isPaused;
         chrome.storage.local.set({ isPaused: !!request.isPaused }, () => {
             sendResponse({ success: true, isPaused: !!request.isPaused });
         });
         return true;
-    } else if (request.action === "syncHistory") {
+    } else if (request.action === "syncHistory" || request.action === "syncChromeHistory") {
         syncChromeHistory().then(() => sendResponse({ ok: true }));
         return true;
     }
@@ -523,7 +612,11 @@ async function syncChromeHistory() {
     }
 
     try {
-        const { headers } = await getAuthHeaders();
+        const { headers, user } = await getAuthHeaders();
+        if (!user || !user.token) {
+            console.log("[TraceX] Cannot sync history: user not authenticated");
+            return;
+        }
 
         // Fetch history from last 7 days
         const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -549,22 +642,55 @@ async function syncChromeHistory() {
 
         console.log(`[TraceX] Syncing ${filtered.length} Chrome history records...`);
 
-        const resp = await fetch(`${API_BASE_URL}/api/activity-logs/browser-history`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(filtered.map(item => ({
-                url: item.url,
-                title: item.title,
-                visit_count: item.visitCount || 1,
-                lastVisitTime: item.lastVisitTime,  // Chrome ms since epoch
-            }))),
-            signal: AbortSignal.timeout(15000),
-        });
+        const BATCH_SIZE = 50;
+let totalSaved = 0;
+let failedBatches = 0;
 
-        if (resp.ok) {
-            const result = await resp.json();
-            console.log(`[TraceX] History sync: ${result.count} records saved`);
+for (let i = 0; i < filtered.length; i += BATCH_SIZE) {
+    const batch = filtered.slice(i, i + BATCH_SIZE);
+
+    try {
+        const resp = await fetch(
+            `${API_BASE_URL}/api/activity-logs/browser-history`,
+            {
+                method: "POST",
+                headers,
+                body: JSON.stringify(
+                    batch.map(item => ({
+                        url: item.url,
+                        title: item.title || item.url,
+                        visit_count: item.visitCount || 1,
+                        lastVisitTime: item.lastVisitTime
+                    }))
+                ),
+                signal: AbortSignal.timeout(30000)
+            }
+        );
+
+        if (!resp.ok) {
+            console.error(
+                `[TraceX] History batch failed: HTTP ${resp.status}`,
+                await resp.text()
+            );
+            failedBatches++;
+            continue;
         }
+
+        const result = await resp.json();
+        totalSaved += Number(result.count) || 0;
+
+        console.log(
+            `[TraceX] History batch ${Math.floor(i / BATCH_SIZE) + 1} saved`
+        );
+    } catch (err) {
+        console.error("[TraceX] History batch error:", err);
+        failedBatches++;
+    }
+}
+
+console.log(
+    `[TraceX] History sync finished: ${totalSaved} saved, ${failedBatches} failed batches`
+);
     } catch (err) {
         console.error("[TraceX] History sync error:", err);
     }
